@@ -28,8 +28,10 @@ cleanup through synchronous REST calls to asynchronous MQ decoupling and alertin
 Plus [`common/`](common) (no port) — the shared ActiveMQ broker and MQ config notes
 for `congestion-topic`: Routing Service becomes aware of congestion changes via an ActiveMQ Topic instead of querying Congestion Service directly.
 
-**Status:** scaffold only — build files, Javalin bootstrap, and TODOs are in place; no
-business logic has been implemented yet.
+**Status:** Partial implementation for Systems Integration secondary project (real message queue integration).
+- **Implemented:** Stage 4 ActiveMQ Heartbeat Queue (`intersection-heartbeat-queue`) connecting `intersection-service` (producer) and `intersection-watchdog` (consumer), featuring per-intersection health tracking, independent background timeout detection (>5000ms), automatic recovery, `/health`, `/status`, and `/alerts` endpoints, and automated unit/integration test suites. Heartbeats currently operate on explicitly configured demo intersection records (`INT-1001`, `INT-1002`, `INT-1005`) matching `intersections-legacy.csv`.
+- **Incomplete / Stretch:** Stage 1 CSV parsing/cleaning in `ingestion-service`, Stage 2 canonical domain REST endpoints, and Stage 3 `congestion-topic` pub/sub decoupling.
+- **Service Details:** See [`intersection-service/README.md`](intersection-service/README.md) and [`intersection-watchdog/README.md`](intersection-watchdog/README.md) for module-specific configuration and demonstration workflows.
 
 ## Your task
 
@@ -131,34 +133,37 @@ cd intersection-watchdog && mvn package && java -jar target/intersection-watchdo
 
 ## Test
 
-No automated tests exist yet (this is a scaffold). Each running service exposes
-`/health`, so sanity-check manually:
+### Automated Unit Tests (No Broker Required)
 
+Run fast, isolated unit tests without needing ActiveMQ or Docker running:
+
+```bash
+# Unit tests in intersection-service (5 tests: serialization, validation, producer defaults)
+mvn -f intersection-service/pom.xml test
+
+# Unit tests in intersection-watchdog (8 tests: tracking, timeouts, invalid message discard, recovery)
+mvn -f intersection-watchdog/pom.xml test
 ```
+
+### Automated Integration Tests (Real Broker Required)
+
+Prerequisites: ActiveMQ must be running (`cd common && docker compose up -d`).
+
+```bash
+# Integration test in intersection-service (1 test: producer connection and delivery)
+mvn -f intersection-service/pom.xml failsafe:integration-test failsafe:verify
+
+# Integration test in intersection-watchdog (1 test: end-to-end JMS consumption round-trip)
+mvn -f intersection-watchdog/pom.xml failsafe:integration-test failsafe:verify
+```
+
+### Manual Sanity Checks
+
+Each running service exposes `/health`:
+
+```bash
 curl http://localhost:7020/health   # -> OK
-```
-
-To add real tests to a module, add JUnit 5 and Surefire to its `pom.xml`:
-
-```xml
-<dependency>
-  <groupId>org.junit.jupiter</groupId>
-  <artifactId>junit-jupiter</artifactId>
-  <version>5.10.2</version>
-  <scope>test</scope>
-</dependency>
-```
-
-```xml
-<plugin>
-  <groupId>org.apache.maven.plugins</groupId>
-  <artifactId>maven-surefire-plugin</artifactId>
-  <version>3.2.5</version>
-</plugin>
-```
-
-then add tests under that module's `src/test/java/...` and run:
-
-```
-mvn test
+curl http://localhost:7021/health   # -> OK
+curl http://localhost:7024/health   # -> OK
+curl http://localhost:7024/alerts   # -> 200 OK (or 503 if heartbeats missed)
 ```
