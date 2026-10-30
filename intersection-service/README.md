@@ -2,7 +2,9 @@
 
 ## Overview
 
-Validates intersection/district names (source of truth).
+Intended role: validate intersection/district names as the source of truth.
+The current implementation provides the heartbeat producer described below;
+canonical lookup/validation is still incomplete.
 
 Part of the [TrafficFlow](../README.md) project. Independent Maven module, no
 parent pom.
@@ -19,11 +21,11 @@ MQ: this service publishes to the ActiveMQ queue `intersection-heartbeat-queue` 
   - Health check endpoint `GET /health` (returns `OK`) and status endpoint `GET /status`.
   - Manual heartbeat trigger endpoint `POST /heartbeat/trigger`.
   - Clean shutdown hooks to close JMS session, producer, and connection.
-  - Automated JUnit 5 unit tests for JSON serialization and producer lifecycle.
+  - Automated JUnit 5 unit tests for message serialization/validation and producer defaults, plus a real-broker producer integration test.
 
 - **Incomplete / Remaining Work:**
   - Stage 1 CSV ingestion integration (`intersections-legacy.csv` parsing from ingestion service).
-  - Stage 2 REST endpoints for full canonical intersection CRUD / validation lookup (`GET /intersections/{id}`).
+  - Stage 2 canonical intersection validation lookup (`GET /intersections/{id}`).
 
 ## Queue Contract & Message Format
 
@@ -39,7 +41,14 @@ MQ: this service publishes to the ActiveMQ queue `intersection-heartbeat-queue` 
 }
 ```
 
+`timestamp` is Unix epoch time in milliseconds. The producer payload uses
+`status: "UP"`; the watchdog maintains its own evaluated health state,
+`HEALTHY` or `ALERT_MISSED_HEARTBEAT`.
+
 ## Build
+
+Run the commands in the Build, Run, and Test sections from the
+`intersection-service/` directory.
 
 ```bash
 mvn package
@@ -48,7 +57,13 @@ Builds the shaded executable JAR at `target/intersection-service.jar`.
 
 ## Run
 
-Prerequisites: ActiveMQ broker must be running (`cd ../common && docker compose up -d`).
+Start the ActiveMQ broker without changing the current directory:
+
+```bash
+docker compose -f ../common/docker-compose.yml up -d
+```
+
+Then start the producer:
 
 ```bash
 java -jar target/intersection-service.jar
@@ -62,7 +77,13 @@ Run automated unit tests (no broker needed):
 mvn test
 ```
 
-Run integration tests against a live broker (`tcp://localhost:61616`):
+For a clean build, unit tests, and the integration test, start the real broker
+first, then run:
+
 ```bash
-mvn failsafe:integration-test failsafe:verify
+mvn clean verify
 ```
+
+This compiles the source and tests, runs the unit tests, builds the shaded JAR,
+and runs and verifies the Failsafe integration test against
+`tcp://localhost:61616`. The integration test uses a separate test queue.

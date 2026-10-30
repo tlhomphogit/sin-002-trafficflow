@@ -2,7 +2,9 @@
 
 ## Overview
 
-Cries for help if the Intersection Service crashes, since routes can no longer be validated.
+Detects missing heartbeats from the Intersection Service and raises timeout
+alerts. Canonical route validation remains part of the unfinished domain REST
+stages.
 
 Part of the [TrafficFlow](../README.md) project — its alerting service.
 Independent Maven module, no parent pom.
@@ -45,7 +47,20 @@ MQ: this service subscribes to the ActiveMQ queue `intersection-heartbeat-queue`
 }
 ```
 
+`timestamp` is Unix epoch time in milliseconds. A valid heartbeat has a
+non-blank `intersectionId`, a positive timestamp, and a status of `UP`
+(case-insensitive). Messages failing these checks are discarded without
+refreshing heartbeat state or clearing alerts.
+
+The payload's `UP` status represents the producer's operational state. The
+watchdog's evaluated intersection state is `HEALTHY` during normal operation
+and after recovery, or `ALERT_MISSED_HEARTBEAT` after a timeout.
+
 ## Build
+
+Run the commands in the Build, Run, and Test sections from the
+`intersection-watchdog/` directory. The demonstration section below uses paths
+relative to the repository root instead.
 
 ```bash
 mvn package
@@ -54,7 +69,13 @@ Builds the shaded executable JAR at `target/intersection-watchdog.jar`.
 
 ## Run
 
-Prerequisites: ActiveMQ broker must be running (`cd ../common && docker compose up -d`).
+Start the ActiveMQ broker without changing the current directory:
+
+```bash
+docker compose -f ../common/docker-compose.yml up -d
+```
+
+Then start the watchdog:
 
 ```bash
 java -jar target/intersection-watchdog.jar
@@ -68,16 +89,32 @@ Run automated unit tests (no broker needed):
 mvn test
 ```
 
-Run integration tests against a live broker (`tcp://localhost:61616`):
+For a clean build, unit tests, and the integration test, start the real broker
+first, then run:
+
 ```bash
-mvn failsafe:integration-test failsafe:verify
+mvn clean verify
 ```
+
+This compiles the source and tests, runs the unit tests, builds the shaded JAR,
+and runs and verifies the Failsafe integration test against
+`tcp://localhost:61616`. The integration test uses a separate test queue.
 
 ## Demonstration Steps (Normal Operation, Timeout, and Recovery)
 
+Run all commands in this section from the repository root. Open separate
+terminals at that root for the watchdog, producer, and endpoint checks.
+
+Build both executable JARs if they are not already built:
+
+```bash
+mvn -f intersection-service/pom.xml package
+mvn -f intersection-watchdog/pom.xml package
+```
+
 1. **Start the Broker:**
    ```bash
-   cd common && docker compose up -d
+   docker compose -f common/docker-compose.yml up -d
    ```
 
 2. **Start the Watchdog:**
@@ -89,33 +126,38 @@ mvn failsafe:integration-test failsafe:verify
    ```bash
    java -jar intersection-service/target/intersection-service.jar
    ```
-   Observe in the watchdog logs:
-   `[WATCHDOG-RECEIVE] Heartbeat received for INT-1001 (Downtown) - latency: 5ms`
-   And query `/alerts`:
+   Wait for `[WATCHDOG-RECEIVE]` messages in the watchdog logs. In the endpoint
+   check terminal, query `/alerts`:
    ```bash
    curl -i http://localhost:7024/alerts
-   # Returns HTTP 200 OK with alertCount: 0
+   # Expected: HTTP 200, monitoredCount: 3, alertCount: 0,
+   # and each intersection's status: "HEALTHY".
    ```
 
 4. **Simulate Crash / Stop Producer:**
-   Kill the `intersection-service` process.
-   Wait 5 seconds. Observe in the watchdog logs:
-   `[WATCHDOG-ALERT] Missing heartbeat for intersection INT-1001 (Downtown)! Elapsed: 5918ms (timeout threshold: 5000ms)`
-   And query `/alerts`:
+   Press `Ctrl+C` in the producer terminal. Leave the watchdog running.
+   Allow the default 5000 ms timeout and the next scheduled 1000 ms check to
+   elapse. In the endpoint check terminal:
    ```bash
+   sleep 7
    curl -i http://localhost:7024/alerts
-   # Returns HTTP 503 Service Unavailable with alertCount: 3 and inAlert: true
+   # Expected: HTTP 503, alertCount: 3, inAlert: true,
+   # and intersection status: "ALERT_MISSED_HEARTBEAT".
    ```
+   The watchdog logs a `[WATCHDOG-ALERT]` message for each timed-out intersection.
 
 5. **Simulate Recovery / Restart Producer:**
-   Restart `intersection-service`:
+   Restart `intersection-service` in the producer terminal:
    ```bash
    java -jar intersection-service/target/intersection-service.jar
    ```
-   Observe in the watchdog logs:
-   `[WATCHDOG-RECOVERY] Heartbeat resumed for intersection INT-1001 (Downtown)! State restored to HEALTHY.`
-   And query `/alerts`:
+   Wait for valid heartbeats and `[WATCHDOG-RECOVERY]` messages in the watchdog
+   logs, then query `/alerts` from the endpoint check terminal:
    ```bash
    curl -i http://localhost:7024/alerts
-   # Returns HTTP 200 OK with alertCount: 0 and inAlert: false
+   # Expected: HTTP 200, alertCount: 0, inAlert: false,
+   # and each intersection's status: "HEALTHY".
    ```
+
+The `/health` endpoint can remain `OK` while `/alerts` returns `503`: the
+watchdog process is alive while a monitored intersection has missed heartbeats.
